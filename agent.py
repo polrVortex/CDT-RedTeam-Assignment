@@ -10,7 +10,7 @@ import base64
 
 # The address of the C2 Server
 # Testing locally for now
-SERVER_URL = "http://100.65.3.15:5000"
+SERVER_URL = "http://10.10.10.86:5000"
 AGENT_ID = "agent_001"
 
 # This MUST be exactly 16, 24, or 32 bytes long

